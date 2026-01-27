@@ -197,8 +197,45 @@ def heston_price(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
     return (S0 - K * np.exp(-r * tau)) / 2 + real_integral / np.pi
 
 
+# =============================================================================
+# Part 4: Yield Curve Calibration (Nelson-Siegel-Svensson)
+# =============================================================================
+
+def calibrate_yield_curve(yield_maturities=None, yields=None):
+    """
+    Calibrate a yield curve using the Nelson-Siegel-Svensson model.
+    
+    Uses US Daily Treasury Par Yield Curve Rates as default data.
+    Reference: https://home.treasury.gov/policy-issues/financing-the-government/interest-rate-statistics
+    
+    Parameters:
+    -----------
+    yield_maturities : array, optional
+        Maturities in years for the yield curve points
+    yields : array, optional
+        Corresponding yield rates (as decimals, not percentages)
+        
+    Returns:
+    --------
+    NelsonSiegelSvenssonCurve
+        Fitted yield curve object that can be called with maturity to get rate
+    """
+    if yield_maturities is None:
+        # Default US Treasury maturities (in years)
+        yield_maturities = np.array([1/12, 2/12, 3/12, 6/12, 1, 2, 3, 5, 7, 10, 20, 30])
+    
+    if yields is None:
+        # Sample Treasury yields (converted from percentage to decimal)
+        yields = np.array([0.15, 0.27, 0.50, 0.93, 1.52, 2.13, 2.32, 2.34, 2.37, 2.32, 2.65, 2.52]) / 100
+    
+    # Calibrate NSS model using ordinary least squares
+    curve_fit, status = calibrate_nss_ols(yield_maturities, yields)
+    
+    return curve_fit
+
+
 if __name__ == "__main__":
-    # Test parameters
+    # Test parameters for Heston model
     S0 = 100.0      # initial asset price
     K = 100.0       # strike price
     v0 = 0.1        # initial variance
@@ -211,7 +248,7 @@ if __name__ == "__main__":
     r = 0.03        # risk free rate
     
     print("=" * 60)
-    print("Step 2 Complete: Heston Option Pricing Functions")
+    print("Step 3 Complete: Yield Curve Calibration")
     print("=" * 60)
     
     # Test characteristic function
@@ -227,4 +264,17 @@ if __name__ == "__main__":
     price_quad = heston_price(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
     print(f"Heston price (scipy quad):  {price_quad:.6f}")
     
-    print(f"\nDifference: {abs(price_rec - price_quad):.8f}")
+    # Test yield curve calibration
+    print("\n" + "-" * 60)
+    print("Yield Curve Calibration (Nelson-Siegel-Svensson)")
+    print("-" * 60)
+    
+    curve = calibrate_yield_curve()
+    print(f"\nFitted NSS curve: {curve}")
+    
+    # Test rates at various maturities
+    test_maturities = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
+    print("\nInterpolated rates:")
+    for mat in test_maturities:
+        rate = curve(mat)
+        print(f"  {mat:5.2f} years: {rate*100:.4f}%")
