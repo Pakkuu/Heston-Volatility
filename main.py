@@ -234,47 +234,184 @@ def calibrate_yield_curve(yield_maturities=None, yields=None):
     return curve_fit
 
 
-if __name__ == "__main__":
-    # Test parameters for Heston model
-    S0 = 100.0      # initial asset price
-    K = 100.0       # strike price
-    v0 = 0.1        # initial variance
-    kappa = 1.5768  # rate of mean reversion of variance process
-    theta = 0.0398  # long-term mean variance
-    sigma = 0.3     # volatility of volatility
-    lambd = 0.575   # risk premium of variance
-    rho = -0.5711   # correlation between variance and stock process
-    tau = 1.0       # time to maturity
-    r = 0.03        # risk free rate
+# =============================================================================
+# Part 5: Market Data Fetching (EOD Historical Data API)
+# =============================================================================
+
+def fetch_market_data(api_key=None, symbol='GSPC.INDX'):
+    """
+    Fetch option market data from EOD Historical Data API.
     
-    print("=" * 60)
-    print("Step 3 Complete: Yield Curve Calibration")
-    print("=" * 60)
+    Parameters:
+    -----------
+    api_key : str, optional
+        EOD API key. If None, will try to get from EOD_API environment variable.
+    symbol : str
+        Symbol to fetch options for (default: S&P500 Index)
+        
+    Returns:
+    --------
+    tuple
+        (S0, market_prices) where S0 is spot price and market_prices is dict of option data
+    """
+    if api_key is None:
+        api_key = os.environ.get('EOD_API')
     
-    # Test characteristic function
-    phi = 1.0
-    char_result = heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r)
-    print(f"\nCharacteristic function (phi=1): {char_result}")
+    if api_key is None:
+        raise ValueError("EOD API key not found. Set EOD_API environment variable or pass api_key.")
     
-    # Test pricing with rectangular integration
-    price_rec = heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
-    print(f"\nHeston price (rectangular): {price_rec:.6f}")
+    # Create the client instance
+    client = EodHistoricalData(api_key)
     
-    # Test pricing with scipy quad
-    price_quad = heston_price(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
-    print(f"Heston price (scipy quad):  {price_quad:.6f}")
+    # Fetch option data
+    resp = client.get_stock_options(symbol)
     
-    # Test yield curve calibration
-    print("\n" + "-" * 60)
-    print("Yield Curve Calibration (Nelson-Siegel-Svensson)")
-    print("-" * 60)
+    S0 = resp['lastTradePrice']
+    market_prices = {}
+    
+    for i in resp['data']:
+        market_prices[i['expirationDate']] = {
+            'strike': [name['strike'] for name in i['options']['CALL']],
+            'price': [(name['bid'] + name['ask']) / 2 for name in i['options']['CALL']]
+        }
+    
+    return S0, market_prices
+
+
+def process_market_data(S0, market_prices, curve_fit):
+    """
+    Process raw market data into format suitable for calibration.
+    
+    Parameters:
+    -----------
+    S0 : float
+        Spot price
+    market_prices : dict
+        Dictionary of option prices by expiration date
+    curve_fit : NelsonSiegelSvenssonCurve
+        Fitted yield curve for rate interpolation
+        
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with columns: maturity, strike, price, rate
+    """
+    # Find common strikes across all maturities
+    all_strikes = [v['strike'] for i, v in market_prices.items()]
+    common_strikes = set.intersection(*map(set, all_strikes))
+    common_strikes = sorted(common_strikes)
+    
+    print(f"Number of common strikes: {len(common_strikes)}")
+    
+    # Build price matrix
+    prices = []
+    maturities = []
+    
+    for date, v in market_prices.items():
+        maturities.append((dt.strptime(date, '%Y-%m-%d') - dt.today()).days / 365.25)
+        price = [v['price'][i] for i, x in enumerate(v['strike']) if x in common_strikes]
+        prices.append(price)
+    
+    # Create volatility surface DataFrame
+    price_arr = np.array(prices, dtype=object)
+    volSurface = pd.DataFrame(price_arr, index=maturities, columns=common_strikes)
+    
+    # Filter to reasonable range (maturity: 0.04-1 years, strikes: 3000-5000)
+    volSurface = volSurface.iloc[
+        (volSurface.index > 0.04) & (volSurface.index < 1),
+        (volSurface.columns > 3000) & (volSurface.columns < 5000)
+    ]
+    
+    # Convert to long format for calibration
+    volSurfaceLong = volSurface.melt(ignore_index=False).reset_index()
+    volSurfaceLong.columns = ['maturity', 'strike', 'price']
+    
+    # Calculate risk-free rate for each maturity
+    volSurfaceLong['rate'] = volSurfaceLong['maturity'].apply(curve_fit)
+    
+    return volSurfaceLong
+
+
+def generate_test_market_data():
+    """
+    Generate synthetic test market data for testing without API access.
+    
+    Returns:
+    --------
+    tuple
+        (S0, r, K, tau, P) arrays for calibration testing
+    """
+    S0 = 4500.0  # Approximate S&P 500 level
+    
+    # Generate synthetic option data
+    strikes = np.array([4000, 4200, 4400, 4500, 4600, 4800, 5000])
+    maturities = np.array([0.1, 0.25, 0.5, 0.75])
+    
+    # Use Heston model to generate "market" prices with known parameters
+    v0_true = 0.04
+    kappa_true = 2.0
+    theta_true = 0.04
+    sigma_true = 0.3
+    rho_true = -0.7
+    lambd_true = 0.1
+    
+    # Build arrays
+    K_list, tau_list, r_list, P_list = [], [], [], []
     
     curve = calibrate_yield_curve()
-    print(f"\nFitted NSS curve: {curve}")
     
-    # Test rates at various maturities
-    test_maturities = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
-    print("\nInterpolated rates:")
-    for mat in test_maturities:
-        rate = curve(mat)
-        print(f"  {mat:5.2f} years: {rate*100:.4f}%")
+    for tau in maturities:
+        r = curve(tau)
+        for K in strikes:
+            price = heston_price_rec(S0, K, v0_true, kappa_true, theta_true, 
+                                     sigma_true, rho_true, lambd_true, tau, r)
+            K_list.append(K)
+            tau_list.append(tau)
+            r_list.append(r)
+            P_list.append(price)
+    
+    return (S0, 
+            np.array(r_list), 
+            np.array(K_list), 
+            np.array(tau_list), 
+            np.array(P_list))
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("Step 4 Complete: Market Data Fetching")
+    print("=" * 60)
+    
+    # Test Heston pricing (quick check)
+    S0_test = 100.0
+    K_test = 100.0
+    v0, kappa, theta = 0.1, 1.5768, 0.0398
+    sigma, lambd, rho = 0.3, 0.575, -0.5711
+    tau, r = 1.0, 0.03
+    
+    price = heston_price_rec(S0_test, K_test, v0, kappa, theta, sigma, rho, lambd, tau, r)
+    print(f"\nHeston price check: {price:.6f}")
+    
+    # Test yield curve
+    print("\n" + "-" * 60)
+    print("Yield Curve")
+    print("-" * 60)
+    curve = calibrate_yield_curve()
+    print(f"1-year rate: {curve(1.0)*100:.4f}%")
+    
+    # Test synthetic market data generation
+    print("\n" + "-" * 60)
+    print("Synthetic Market Data Generation")
+    print("-" * 60)
+    
+    S0, r_arr, K_arr, tau_arr, P_arr = generate_test_market_data()
+    print(f"\nSpot price (S0): {S0}")
+    print(f"Number of options: {len(P_arr)}")
+    print(f"Strike range: {K_arr.min()} - {K_arr.max()}")
+    print(f"Maturity range: {tau_arr.min():.2f} - {tau_arr.max():.2f} years")
+    print(f"Price range: {P_arr.min():.2f} - {P_arr.max():.2f}")
+    
+    # Show sample of data
+    print("\nSample prices (first 5):")
+    for i in range(5):
+        print(f"  K={K_arr[i]:.0f}, tau={tau_arr[i]:.2f}, r={r_arr[i]*100:.2f}%, P={P_arr[i]:.2f}")
