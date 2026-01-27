@@ -4,4 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "eod>=0.2.1",
+    "matplotlib>=3.10.8",
+    "nelson-siegel-svensson>=0.5.0",
+    "numpy>=2.4.1",
+    "pandas>=3.0.0",
+    "scipy>=1.17.0",
+]
