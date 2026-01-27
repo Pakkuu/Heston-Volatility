@@ -506,31 +506,160 @@ def calibrate_heston(S0, K, tau, r, P, params=None, verbose=True):
     return calibrated
 
 
+# =============================================================================
+# Part 7: Visualization
+# =============================================================================
+
+def plot_calibration_results(tau_arr, K_arr, market_prices, heston_prices, 
+                              output_file='calibration_results.html'):
+    """
+    Create 3D visualization comparing market prices vs calibrated Heston prices.
+    
+    Parameters:
+    -----------
+    tau_arr : array
+        Times to maturity
+    K_arr : array
+        Strike prices
+    market_prices : array
+        Market option prices
+    heston_prices : array
+        Calibrated Heston model prices
+    output_file : str
+        Path to save HTML file (None to skip saving)
+        
+    Returns:
+    --------
+    plotly.graph_objects.Figure
+        The 3D figure object
+    """
+    import plotly.graph_objects as go
+    
+    # Create 3D mesh for market prices
+    fig = go.Figure()
+    
+    # Add market prices as mesh surface
+    fig.add_trace(go.Mesh3d(
+        x=tau_arr,
+        y=K_arr,
+        z=market_prices,
+        color='mediumblue',
+        opacity=0.55,
+        name='Market Prices'
+    ))
+    
+    # Add Heston prices as scatter markers
+    fig.add_trace(go.Scatter3d(
+        x=tau_arr,
+        y=K_arr,
+        z=heston_prices,
+        mode='markers',
+        marker=dict(size=5, color='red'),
+        name='Heston Prices'
+    ))
+    
+    # Update layout
+    fig.update_layout(
+        title_text='Market Prices (Mesh) vs Calibrated Heston Prices (Markers)',
+        scene=dict(
+            xaxis_title='TIME (Years)',
+            yaxis_title='STRIKES (Pts)',
+            zaxis_title='OPTION PRICE (Pts)'
+        ),
+        height=800,
+        width=800
+    )
+    
+    # Save to HTML file
+    if output_file:
+        fig.write_html(output_file)
+        print(f"Visualization saved to: {output_file}")
+    
+    return fig
+
+
+def plot_error_surface(tau_arr, K_arr, errors, output_file='pricing_errors.html'):
+    """
+    Create 3D visualization of pricing errors.
+    
+    Parameters:
+    -----------
+    tau_arr : array
+        Times to maturity
+    K_arr : array
+        Strike prices
+    errors : array
+        Pricing errors (market - heston)
+    output_file : str
+        Path to save HTML file
+        
+    Returns:
+    --------
+    plotly.graph_objects.Figure
+    """
+    import plotly.graph_objects as go
+    
+    fig = go.Figure()
+    
+    # Color by error magnitude
+    fig.add_trace(go.Scatter3d(
+        x=tau_arr,
+        y=K_arr,
+        z=errors,
+        mode='markers',
+        marker=dict(
+            size=8,
+            color=errors,
+            colorscale='RdBu',
+            colorbar=dict(title='Error'),
+            cmin=-max(abs(errors)),
+            cmax=max(abs(errors))
+        ),
+        name='Pricing Errors'
+    ))
+    
+    fig.update_layout(
+        title_text='Heston Model Pricing Errors',
+        scene=dict(
+            xaxis_title='TIME (Years)',
+            yaxis_title='STRIKES (Pts)',
+            zaxis_title='ERROR (Pts)'
+        ),
+        height=700,
+        width=800
+    )
+    
+    if output_file:
+        fig.write_html(output_file)
+        print(f"Error visualization saved to: {output_file}")
+    
+    return fig
+
+
 if __name__ == "__main__":
     print("=" * 60)
-    print("Step 5 Complete: Heston Model Calibration")
+    print("Step 6 Complete: Full Heston Model Pipeline")
     print("=" * 60)
     
     # Generate synthetic market data with known parameters
     print("\n" + "-" * 60)
-    print("Generating Synthetic Market Data")
+    print("1. Generating Synthetic Market Data")
     print("-" * 60)
-    print("\nTrue parameters used to generate data:")
-    print("  v0=0.04, kappa=2.0, theta=0.04, sigma=0.3, rho=-0.7, lambd=0.1")
+    print("\nTrue parameters: v0=0.04, kappa=2.0, theta=0.04, sigma=0.3, rho=-0.7, lambd=0.1")
     
     S0, r_arr, K_arr, tau_arr, P_arr = generate_test_market_data()
-    print(f"\nGenerated {len(P_arr)} option prices")
+    print(f"Generated {len(P_arr)} option prices")
     
     # Calibrate Heston model
     print("\n" + "-" * 60)
-    print("Calibrating Heston Model")
+    print("2. Calibrating Heston Model")
     print("-" * 60 + "\n")
     
     calibrated = calibrate_heston(S0, K_arr, tau_arr, r_arr, P_arr)
     
     # Calculate calibrated prices
     print("\n" + "-" * 60)
-    print("Comparing Market vs Calibrated Prices")
+    print("3. Computing Calibrated Prices")
     print("-" * 60)
     
     cal_prices = heston_price_rec(
@@ -540,13 +669,6 @@ if __name__ == "__main__":
         tau_arr, r_arr
     )
     
-    # Show comparison for first 5 options
-    print("\nSample comparison (first 5 options):")
-    print(f"{'Strike':>8} {'Tau':>6} {'Market':>10} {'Heston':>10} {'Error':>10}")
-    for i in range(5):
-        error = P_arr[i] - cal_prices[i]
-        print(f"{K_arr[i]:>8.0f} {tau_arr[i]:>6.2f} {P_arr[i]:>10.2f} {cal_prices[i]:>10.2f} {error:>10.4f}")
-    
     # Summary statistics
     errors = P_arr - cal_prices
     print(f"\nPricing error statistics:")
@@ -554,3 +676,19 @@ if __name__ == "__main__":
     print(f"  Mean abs error: {np.mean(np.abs(errors)):>10.4f}")
     print(f"  Max abs error:  {np.max(np.abs(errors)):>10.4f}")
     print(f"  RMSE:           {np.sqrt(np.mean(errors**2)):>10.4f}")
+    
+    # Create visualizations
+    print("\n" + "-" * 60)
+    print("4. Creating Visualizations")
+    print("-" * 60 + "\n")
+    
+    fig1 = plot_calibration_results(tau_arr, K_arr, P_arr, cal_prices)
+    fig2 = plot_error_surface(tau_arr, K_arr, errors)
+    
+    print("\n" + "=" * 60)
+    print("Pipeline Complete!")
+    print("=" * 60)
+    print("\nGenerated files:")
+    print("  - calibration_results.html (3D price comparison)")
+    print("  - pricing_errors.html (error surface)")
+    print("\nOpen the HTML files in a browser to view interactive 3D plots.")
