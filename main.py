@@ -377,41 +377,180 @@ def generate_test_market_data():
             np.array(P_list))
 
 
+# =============================================================================
+# Part 6: Calibration Optimization
+# =============================================================================
+
+# Default parameter configuration for calibration
+DEFAULT_PARAMS = {
+    "v0": {"x0": 0.1, "lbub": [1e-3, 0.1]},
+    "kappa": {"x0": 3, "lbub": [1e-3, 5]},
+    "theta": {"x0": 0.05, "lbub": [1e-3, 0.1]},
+    "sigma": {"x0": 0.3, "lbub": [1e-2, 1]},
+    "rho": {"x0": -0.8, "lbub": [-1, 0]},
+    "lambd": {"x0": 0.03, "lbub": [-1, 1]},
+}
+
+
+def create_objective_function(S0, K, tau, r, P):
+    """
+    Create the squared error objective function for calibration.
+    
+    Parameters:
+    -----------
+    S0 : float
+        Spot price
+    K : array
+        Strike prices
+    tau : array
+        Times to maturity
+    r : array
+        Risk-free rates
+    P : array
+        Market option prices
+        
+    Returns:
+    --------
+    callable
+        Objective function that takes parameter vector x and returns squared error
+    """
+    def SqErr(x):
+        v0, kappa, theta, sigma, rho, lambd = x
+        
+        # Calculate Heston prices for all options
+        heston_prices = heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
+        
+        # Mean squared error
+        err = np.sum((P - heston_prices)**2 / len(P))
+        
+        # Optional penalty term (currently zero - no prior guesses)
+        pen = 0
+        
+        return err + pen
+    
+    return SqErr
+
+
+def calibrate_heston(S0, K, tau, r, P, params=None, verbose=True):
+    """
+    Calibrate Heston model parameters to market option prices.
+    
+    Uses SLSQP optimization to minimize squared pricing error.
+    
+    Parameters:
+    -----------
+    S0 : float
+        Spot price
+    K : array
+        Strike prices
+    tau : array
+        Times to maturity  
+    r : array
+        Risk-free rates
+    P : array
+        Market option prices
+    params : dict, optional
+        Parameter configuration with initial values and bounds
+    verbose : bool
+        Whether to print optimization progress
+        
+    Returns:
+    --------
+    dict
+        Calibrated parameters and optimization result
+    """
+    if params is None:
+        params = DEFAULT_PARAMS
+    
+    # Extract initial values and bounds
+    x0 = [param["x0"] for key, param in params.items()]
+    bnds = [param["lbub"] for key, param in params.items()]
+    
+    # Create objective function
+    SqErr = create_objective_function(S0, K, tau, r, P)
+    
+    if verbose:
+        print("Starting calibration...")
+        print(f"  Initial params: v0={x0[0]}, kappa={x0[1]}, theta={x0[2]}, "
+              f"sigma={x0[3]}, rho={x0[4]}, lambd={x0[5]}")
+    
+    # Run optimization
+    result = minimize(SqErr, x0, tol=1e-3, method='SLSQP', 
+                     options={'maxiter': int(1e4)}, bounds=bnds)
+    
+    # Extract calibrated parameters
+    v0, kappa, theta, sigma, rho, lambd = result.x
+    
+    calibrated = {
+        'v0': v0,
+        'kappa': kappa,
+        'theta': theta,
+        'sigma': sigma,
+        'rho': rho,
+        'lambd': lambd,
+        'optimization_result': result
+    }
+    
+    if verbose:
+        print(f"\nCalibration {'succeeded' if result.success else 'failed'}!")
+        print(f"  Final error: {result.fun:.6f}")
+        print(f"  Iterations: {result.nit}")
+        print(f"\nCalibrated parameters:")
+        print(f"  v0     = {v0:.6f}  (initial variance)")
+        print(f"  kappa  = {kappa:.6f}  (mean reversion rate)")
+        print(f"  theta  = {theta:.6f}  (long-term variance)")
+        print(f"  sigma  = {sigma:.6f}  (vol of vol)")
+        print(f"  rho    = {rho:.6f}  (correlation)")
+        print(f"  lambd  = {lambd:.6f}  (variance risk premium)")
+    
+    return calibrated
+
+
 if __name__ == "__main__":
     print("=" * 60)
-    print("Step 4 Complete: Market Data Fetching")
+    print("Step 5 Complete: Heston Model Calibration")
     print("=" * 60)
     
-    # Test Heston pricing (quick check)
-    S0_test = 100.0
-    K_test = 100.0
-    v0, kappa, theta = 0.1, 1.5768, 0.0398
-    sigma, lambd, rho = 0.3, 0.575, -0.5711
-    tau, r = 1.0, 0.03
-    
-    price = heston_price_rec(S0_test, K_test, v0, kappa, theta, sigma, rho, lambd, tau, r)
-    print(f"\nHeston price check: {price:.6f}")
-    
-    # Test yield curve
+    # Generate synthetic market data with known parameters
     print("\n" + "-" * 60)
-    print("Yield Curve")
+    print("Generating Synthetic Market Data")
     print("-" * 60)
-    curve = calibrate_yield_curve()
-    print(f"1-year rate: {curve(1.0)*100:.4f}%")
-    
-    # Test synthetic market data generation
-    print("\n" + "-" * 60)
-    print("Synthetic Market Data Generation")
-    print("-" * 60)
+    print("\nTrue parameters used to generate data:")
+    print("  v0=0.04, kappa=2.0, theta=0.04, sigma=0.3, rho=-0.7, lambd=0.1")
     
     S0, r_arr, K_arr, tau_arr, P_arr = generate_test_market_data()
-    print(f"\nSpot price (S0): {S0}")
-    print(f"Number of options: {len(P_arr)}")
-    print(f"Strike range: {K_arr.min()} - {K_arr.max()}")
-    print(f"Maturity range: {tau_arr.min():.2f} - {tau_arr.max():.2f} years")
-    print(f"Price range: {P_arr.min():.2f} - {P_arr.max():.2f}")
+    print(f"\nGenerated {len(P_arr)} option prices")
     
-    # Show sample of data
-    print("\nSample prices (first 5):")
+    # Calibrate Heston model
+    print("\n" + "-" * 60)
+    print("Calibrating Heston Model")
+    print("-" * 60 + "\n")
+    
+    calibrated = calibrate_heston(S0, K_arr, tau_arr, r_arr, P_arr)
+    
+    # Calculate calibrated prices
+    print("\n" + "-" * 60)
+    print("Comparing Market vs Calibrated Prices")
+    print("-" * 60)
+    
+    cal_prices = heston_price_rec(
+        S0, K_arr, 
+        calibrated['v0'], calibrated['kappa'], calibrated['theta'],
+        calibrated['sigma'], calibrated['rho'], calibrated['lambd'],
+        tau_arr, r_arr
+    )
+    
+    # Show comparison for first 5 options
+    print("\nSample comparison (first 5 options):")
+    print(f"{'Strike':>8} {'Tau':>6} {'Market':>10} {'Heston':>10} {'Error':>10}")
     for i in range(5):
-        print(f"  K={K_arr[i]:.0f}, tau={tau_arr[i]:.2f}, r={r_arr[i]*100:.2f}%, P={P_arr[i]:.2f}")
+        error = P_arr[i] - cal_prices[i]
+        print(f"{K_arr[i]:>8.0f} {tau_arr[i]:>6.2f} {P_arr[i]:>10.2f} {cal_prices[i]:>10.2f} {error:>10.4f}")
+    
+    # Summary statistics
+    errors = P_arr - cal_prices
+    print(f"\nPricing error statistics:")
+    print(f"  Mean error:     {np.mean(errors):>10.4f}")
+    print(f"  Mean abs error: {np.mean(np.abs(errors)):>10.4f}")
+    print(f"  Max abs error:  {np.max(np.abs(errors)):>10.4f}")
+    print(f"  RMSE:           {np.sqrt(np.mean(errors**2)):>10.4f}")
