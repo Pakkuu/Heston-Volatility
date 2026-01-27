@@ -11,5 +11,6 @@ dependencies = [
     "numpy>=2.4.1",
     "pandas>=3.0.0",
     "plotly>=6.5.2",
+    "python-dotenv>=1.2.1",
     "scipy>=1.17.0",
 ]

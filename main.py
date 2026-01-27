@@ -638,28 +638,35 @@ def plot_error_surface(tau_arr, K_arr, errors, output_file='pricing_errors.html'
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Step 6 Complete: Full Heston Model Pipeline")
+    print("Heston Model Calibration Pipeline (Synthetic Data Mode)")
     print("=" * 60)
     
-    # Generate synthetic market data with known parameters
+    # 1. Yield Curve Calibration
     print("\n" + "-" * 60)
-    print("1. Generating Synthetic Market Data")
+    print("1. Calibrating Yield Curve")
+    print("-" * 60)
+    curve = calibrate_yield_curve()
+    print(f"1-year rate: {curve(1.0)*100:.4f}%")
+    
+    # 2. Market Data Acquisition
+    print("\n" + "-" * 60)
+    print("2. Generating Synthetic Market Data")
     print("-" * 60)
     print("\nTrue parameters: v0=0.04, kappa=2.0, theta=0.04, sigma=0.3, rho=-0.7, lambd=0.1")
     
     S0, r_arr, K_arr, tau_arr, P_arr = generate_test_market_data()
-    print(f"Generated {len(P_arr)} option prices")
+    print(f"Data generated for {len(P_arr)} option prices.")
     
-    # Calibrate Heston model
+    # 3. Calibrate Heston model
     print("\n" + "-" * 60)
-    print("2. Calibrating Heston Model")
+    print("3. Calibrating Heston Model")
     print("-" * 60 + "\n")
     
     calibrated = calibrate_heston(S0, K_arr, tau_arr, r_arr, P_arr)
     
-    # Calculate calibrated prices
+    # 4. Compute Calibrated Prices and Statistics
     print("\n" + "-" * 60)
-    print("3. Computing Calibrated Prices")
+    print("4. Computing Calibrated Prices")
     print("-" * 60)
     
     cal_prices = heston_price_rec(
@@ -677,9 +684,9 @@ if __name__ == "__main__":
     print(f"  Max abs error:  {np.max(np.abs(errors)):>10.4f}")
     print(f"  RMSE:           {np.sqrt(np.mean(errors**2)):>10.4f}")
     
-    # Create visualizations
+    # 5. Create Visualizations
     print("\n" + "-" * 60)
-    print("4. Creating Visualizations")
+    print("5. Creating Visualizations")
     print("-" * 60 + "\n")
     
     fig1 = plot_calibration_results(tau_arr, K_arr, P_arr, cal_prices)
