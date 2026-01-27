@@ -68,25 +68,28 @@ def heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r):
     # Constants
     a = kappa * theta
     b = kappa + lambd
-
-    # Common terms w.r.t phi
     rspi = rho * sigma * phi * 1j
 
-    # Define d parameter given phi and b
+    # Define d parameter (re(d) >= 0)
     d = np.sqrt((rho * sigma * phi * 1j - b)**2 + (phi * 1j + phi**2) * sigma**2)
 
-    # Define g parameter given phi, b and d
-    g = (b - rspi + d) / (b - rspi - d)
+    # Define g parameter (stable formulation uses -d)
+    g = (b - rspi - d) / (b - rspi + d)
 
-    # Calculate characteristic function by components
-    exp1 = np.exp(r * phi * 1j * tau)
-    term2 = S0**(phi * 1j) * ((1 - g * np.exp(d * tau)) / (1 - g))**(-2 * a / sigma**2)
-    exp2 = np.exp(
-        a * tau * (b - rspi + d) / sigma**2 
-        + v0 * (b - rspi + d) * ((1 - np.exp(d * tau)) / (1 - g * np.exp(d * tau))) / sigma**2
+    # Calculate characteristic function components (Numerically Stable Version)
+    # Using the e^(-d*tau) formulation to avoid overflow and branch cut issues
+    exp_minus_d_tau = np.exp(-d * tau)
+    
+    # D term (coefficient of v0)
+    D = ((b - rspi - d) / sigma**2) * ((1 - exp_minus_d_tau) / (1 - g * exp_minus_d_tau))
+    
+    # C term (constant/linear in tau)
+    # Using the Albrecher et al. (2007) stable formulation for the logarithm
+    C = (r * phi * 1j * tau) + (a / sigma**2) * (
+        (b - rspi - d) * tau - 2 * np.log((1 - g * exp_minus_d_tau) / (1 - g))
     )
-
-    return exp1 * term2 * exp2
+    
+    return S0**(phi * 1j) * np.exp(C + D * v0)
 
 
 # =============================================================================
