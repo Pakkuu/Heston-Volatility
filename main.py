@@ -89,9 +89,118 @@ def heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r):
     return exp1 * term2 * exp2
 
 
+# =============================================================================
+# Part 2: Integrand Function
+# =============================================================================
+
+def integrand(phi, S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
+    """
+    Compute the integrand for Heston option pricing.
+    
+    Parameters:
+    -----------
+    phi : float
+        Integration variable
+    S0 : float
+        Initial asset price
+    K : float
+        Strike price
+    v0, kappa, theta, sigma, rho, lambd, tau, r : float
+        Heston model parameters (see heston_charfunc)
+        
+    Returns:
+    --------
+    complex
+        Value of the integrand at phi
+    """
+    args = (S0, v0, kappa, theta, sigma, rho, lambd, tau, r)
+    numerator = np.exp(r * tau) * heston_charfunc(phi - 1j, *args) - K * heston_charfunc(phi, *args)
+    denominator = 1j * phi * K**(1j * phi)
+    return numerator / denominator
+
+
+# =============================================================================
+# Part 3: Heston Option Pricing Functions
+# =============================================================================
+
+def heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
+    """
+    Calculate European call option price using Heston model with rectangular integration.
+    
+    This method uses rectangular (midpoint) integration which is faster and works
+    with arrays, making it suitable for calibration.
+    
+    Parameters:
+    -----------
+    S0 : float
+        Initial asset price
+    K : float or array
+        Strike price(s)
+    v0 : float
+        Initial variance
+    kappa : float
+        Mean reversion rate
+    theta : float
+        Long-term mean variance
+    sigma : float
+        Volatility of volatility
+    rho : float
+        Correlation
+    lambd : float
+        Variance risk premium
+    tau : float or array
+        Time to maturity
+    r : float or array
+        Risk-free rate
+        
+    Returns:
+    --------
+    float or array
+        European call option price(s)
+    """
+    args = (S0, v0, kappa, theta, sigma, rho, lambd, tau, r)
+
+    P, umax, N = 0, 100, 10000
+    dphi = umax / N  # dphi is width
+
+    for i in range(1, N):
+        # Rectangular integration using midpoint
+        phi = dphi * (2 * i + 1) / 2  # midpoint to calculate height
+        numerator = np.exp(r * tau) * heston_charfunc(phi - 1j, *args) - K * heston_charfunc(phi, *args)
+        denominator = 1j * phi * K**(1j * phi)
+
+        P += dphi * numerator / denominator
+
+    return np.real((S0 - K * np.exp(-r * tau)) / 2 + P / np.pi)
+
+
+def heston_price(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
+    """
+    Calculate European call option price using Heston model with scipy quad integration.
+    
+    This method uses scipy's adaptive quadrature for higher accuracy on single values.
+    
+    Parameters:
+    -----------
+    S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r : float
+        Model and option parameters (see heston_price_rec for details)
+        
+    Returns:
+    --------
+    float
+        European call option price
+    """
+    args = (S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
+
+    real_integral, err = np.real(quad(integrand, 0, 100, args=args))
+
+    return (S0 - K * np.exp(-r * tau)) / 2 + real_integral / np.pi
+
+
 if __name__ == "__main__":
-    # Test the characteristic function with sample parameters
+    # Test parameters
     S0 = 100.0      # initial asset price
+    K = 100.0       # strike price
     v0 = 0.1        # initial variance
     kappa = 1.5768  # rate of mean reversion of variance process
     theta = 0.0398  # long-term mean variance
@@ -101,8 +210,21 @@ if __name__ == "__main__":
     tau = 1.0       # time to maturity
     r = 0.03        # risk free rate
     
-    # Test with phi = 1
+    print("=" * 60)
+    print("Step 2 Complete: Heston Option Pricing Functions")
+    print("=" * 60)
+    
+    # Test characteristic function
     phi = 1.0
-    result = heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r)
-    print(f"Step 1 Complete: Heston Characteristic Function")
-    print(f"Test result for phi=1: {result}")
+    char_result = heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r)
+    print(f"\nCharacteristic function (phi=1): {char_result}")
+    
+    # Test pricing with rectangular integration
+    price_rec = heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
+    print(f"\nHeston price (rectangular): {price_rec:.6f}")
+    
+    # Test pricing with scipy quad
+    price_quad = heston_price(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
+    print(f"Heston price (scipy quad):  {price_quad:.6f}")
+    
+    print(f"\nDifference: {abs(price_rec - price_quad):.8f}")
