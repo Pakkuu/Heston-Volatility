@@ -33,7 +33,7 @@ from nelson_siegel_svensson.calibrate import calibrate_nss_ols
 # Part 1: Heston Characteristic Function
 # =============================================================================
 
-def heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r):
+def heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, tau, r):
     """
     Compute the Heston model characteristic function.
     
@@ -53,8 +53,6 @@ def heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r):
         Volatility of volatility
     rho : float
         Correlation between variance and stock process
-    lambd : float
-        Variance risk premium
     tau : float
         Time to maturity
     r : float
@@ -67,7 +65,7 @@ def heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r):
     """
     # Constants
     a = kappa * theta
-    b = kappa + lambd
+    b = kappa
     rspi = rho * sigma * phi * 1j
 
     # Define d parameter (re(d) >= 0)
@@ -96,7 +94,7 @@ def heston_charfunc(phi, S0, v0, kappa, theta, sigma, rho, lambd, tau, r):
 # Part 2: Integrand Function
 # =============================================================================
 
-def integrand(phi, S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
+def integrand(phi, S0, K, v0, kappa, theta, sigma, rho, tau, r):
     """
     Compute the integrand for Heston option pricing.
     
@@ -108,7 +106,7 @@ def integrand(phi, S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
         Initial asset price
     K : float
         Strike price
-    v0, kappa, theta, sigma, rho, lambd, tau, r : float
+    v0, kappa, theta, sigma, rho, tau, r : float
         Heston model parameters (see heston_charfunc)
         
     Returns:
@@ -116,7 +114,7 @@ def integrand(phi, S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
     complex
         Value of the integrand at phi
     """
-    args = (S0, v0, kappa, theta, sigma, rho, lambd, tau, r)
+    args = (S0, v0, kappa, theta, sigma, rho, tau, r)
     numerator = np.exp(r * tau) * heston_charfunc(phi - 1j, *args) - K * heston_charfunc(phi, *args)
     denominator = 1j * phi * K**(1j * phi)
     return numerator / denominator
@@ -126,7 +124,7 @@ def integrand(phi, S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
 # Part 3: Heston Option Pricing Functions
 # =============================================================================
 
-def heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
+def heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, tau, r):
     """
     Calculate European call option price using Heston model with rectangular integration.
     
@@ -149,8 +147,6 @@ def heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
         Volatility of volatility
     rho : float
         Correlation
-    lambd : float
-        Variance risk premium
     tau : float or array
         Time to maturity
     r : float or array
@@ -161,7 +157,7 @@ def heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
     float or array
         European call option price(s)
     """
-    args = (S0, v0, kappa, theta, sigma, rho, lambd, tau, r)
+    args = (S0, v0, kappa, theta, sigma, rho, tau, r)
 
     P, umax, N = 0, 100, 10000
     dphi = umax / N  # dphi is width
@@ -177,7 +173,7 @@ def heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
     return np.real((S0 - K * np.exp(-r * tau)) / 2 + P / np.pi)
 
 
-def heston_price(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
+def heston_price(S0, K, v0, kappa, theta, sigma, rho, tau, r):
     """
     Calculate European call option price using Heston model with scipy quad integration.
     
@@ -185,7 +181,7 @@ def heston_price(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
     
     Parameters:
     -----------
-    S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r : float
+    S0, K, v0, kappa, theta, sigma, rho, tau, r : float
         Model and option parameters (see heston_price_rec for details)
         
     Returns:
@@ -193,7 +189,7 @@ def heston_price(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r):
     float
         European call option price
     """
-    args = (S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
+    args = (S0, K, v0, kappa, theta, sigma, rho, tau, r)
 
     real_integral, err = np.real(quad(integrand, 0, 100, args=args))
 
@@ -356,7 +352,6 @@ def generate_test_market_data():
     theta_true = 0.04
     sigma_true = 0.3
     rho_true = -0.7
-    lambd_true = 0.1
     
     # Build arrays
     K_list, tau_list, r_list, P_list = [], [], [], []
@@ -367,7 +362,7 @@ def generate_test_market_data():
         r = curve(tau)
         for K in strikes:
             price = heston_price_rec(S0, K, v0_true, kappa_true, theta_true, 
-                                     sigma_true, rho_true, lambd_true, tau, r)
+                                     sigma_true, rho_true, tau, r)
             K_list.append(K)
             tau_list.append(tau)
             r_list.append(r)
@@ -391,7 +386,6 @@ DEFAULT_PARAMS = {
     "theta": {"x0": 0.05, "lbub": [1e-3, 0.1]},
     "sigma": {"x0": 0.3, "lbub": [1e-2, 1]},
     "rho": {"x0": -0.8, "lbub": [-1, 0]},
-    "lambd": {"x0": 0.03, "lbub": [-1, 1]},
 }
 
 
@@ -418,10 +412,10 @@ def create_objective_function(S0, K, tau, r, P):
         Objective function that takes parameter vector x and returns squared error
     """
     def SqErr(x):
-        v0, kappa, theta, sigma, rho, lambd = x
+        v0, kappa, theta, sigma, rho = x
         
         # Calculate Heston prices for all options
-        heston_prices = heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, lambd, tau, r)
+        heston_prices = heston_price_rec(S0, K, v0, kappa, theta, sigma, rho, tau, r)
         
         # Mean squared error
         err = np.sum((P - heston_prices)**2 / len(P))
@@ -475,14 +469,14 @@ def calibrate_heston(S0, K, tau, r, P, params=None, verbose=True):
     if verbose:
         print("Starting calibration...")
         print(f"  Initial params: v0={x0[0]}, kappa={x0[1]}, theta={x0[2]}, "
-              f"sigma={x0[3]}, rho={x0[4]}, lambd={x0[5]}")
+              f"sigma={x0[3]}, rho={x0[4]}")
     
     # Run optimization
     result = minimize(SqErr, x0, tol=1e-3, method='SLSQP', 
                      options={'maxiter': int(1e4)}, bounds=bnds)
     
     # Extract calibrated parameters
-    v0, kappa, theta, sigma, rho, lambd = result.x
+    v0, kappa, theta, sigma, rho = result.x
     
     calibrated = {
         'v0': v0,
@@ -490,7 +484,6 @@ def calibrate_heston(S0, K, tau, r, P, params=None, verbose=True):
         'theta': theta,
         'sigma': sigma,
         'rho': rho,
-        'lambd': lambd,
         'optimization_result': result
     }
     
@@ -504,7 +497,6 @@ def calibrate_heston(S0, K, tau, r, P, params=None, verbose=True):
         print(f"  theta  = {theta:.6f}  (long-term variance)")
         print(f"  sigma  = {sigma:.6f}  (vol of vol)")
         print(f"  rho    = {rho:.6f}  (correlation)")
-        print(f"  lambd  = {lambd:.6f}  (variance risk premium)")
     
     return calibrated
 
@@ -655,7 +647,7 @@ if __name__ == "__main__":
     print("\n" + "-" * 60)
     print("2. Generating Synthetic Market Data")
     print("-" * 60)
-    print("\nTrue parameters: v0=0.04, kappa=2.0, theta=0.04, sigma=0.3, rho=-0.7, lambd=0.1")
+    print("\nTrue parameters: v0=0.04, kappa=2.0, theta=0.04, sigma=0.3, rho=-0.7")
     
     S0, r_arr, K_arr, tau_arr, P_arr = generate_test_market_data()
     print(f"Data generated for {len(P_arr)} option prices.")
@@ -675,7 +667,7 @@ if __name__ == "__main__":
     cal_prices = heston_price_rec(
         S0, K_arr, 
         calibrated['v0'], calibrated['kappa'], calibrated['theta'],
-        calibrated['sigma'], calibrated['rho'], calibrated['lambd'],
+        calibrated['sigma'], calibrated['rho'],
         tau_arr, r_arr
     )
     
