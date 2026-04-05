@@ -61,6 +61,3 @@ The implementation follows the characteristic function approach described by Hes
 $$\min_{\Theta} \sum_{i,j} (C_{Market}(K_i, \tau_j) - C_{Heston}(K_i, \tau_j, \Theta))^2$$
 
 Where $\Theta = (v_0, \kappa, \theta, \sigma, \rho, \lambda)$.
-
----
-*Created as part of an advanced quantitative finance exploration.*
