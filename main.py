@@ -15,7 +15,6 @@ References:
 - Heston Calibration: https://calebmigosi.medium.com/build-the-heston-model-from-scratch-in-python-part-ii
 """
 
-import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -23,9 +22,8 @@ import matplotlib.pyplot as plt
 from scipy.integrate import quad
 from scipy.optimize import minimize, differential_evolution
 from scipy.optimize import NonlinearConstraint
-from datetime import datetime as dt, timezone
+from datetime import datetime as dt, date, timedelta, timezone
 
-from eod import EodHistoricalData
 from nelson_siegel_svensson import NelsonSiegelSvenssonCurve
 from nelson_siegel_svensson.calibrate import calibrate_nss_ols
 
@@ -208,188 +206,140 @@ def heston_price_quad(S0, K, v0, kappa, theta, sigma, rho, tau, r, alpha=1.5):
 
 
 # =============================================================================
-# Part 4: Yield Curve Calibration (Nelson-Siegel-Svensson)
+# Part 4: Yield Curve Calibration (Live FRED Data + Nelson-Siegel-Svensson)
 # =============================================================================
 
-def calibrate_yield_curve(yield_maturities=None, yields=None):
+# FRED series IDs mapped to their maturities in years
+_FRED_SERIES = {
+    'DGS1MO': 1/12,
+    'DGS3MO': 3/12,
+    'DGS6MO': 6/12,
+    'DGS1':   1,
+    'DGS2':   2,
+    'DGS5':   5,
+    'DGS10':  10,
+    'DGS30':  30,
+}
+
+
+def calibrate_yield_curve():
     """
-    Calibrate a yield curve using the Nelson-Siegel-Svensson model.
+    Calibrate a yield curve using the Nelson-Siegel-Svensson model
+    with live US Treasury Par Yield Curve rates from FRED.
     
-    Uses US Daily Treasury Par Yield Curve Rates as default data.
-    Reference: https://home.treasury.gov/policy-issues/financing-the-government/interest-rate-statistics
+    Fetches the most recent daily rates for 8 standard tenors from
+    FRED's public CSV endpoints (no API key required), then fits
+    an NSS curve via ordinary least squares.
     
-    Parameters:
-    -----------
-    yield_maturities : array, optional
-        Maturities in years for the yield curve points
-    yields : array, optional
-        Corresponding yield rates (as decimals, not percentages)
-        
+    Falls back to hardcoded rates if FRED is unreachable.
+    
     Returns:
     --------
     NelsonSiegelSvenssonCurve
         Fitted yield curve object that can be called with maturity to get rate
     """
-    if yield_maturities is None:
-        # Default US Treasury maturities (in years)
-        yield_maturities = np.array([1/12, 2/12, 3/12, 6/12, 1, 2, 3, 5, 7, 10, 20, 30])
+    yield_maturities = []
+    yields_decimal = []
     
-    if yields is None:
-        # Sample Treasury yields (converted from percentage to decimal)
-        yields = np.array([0.15, 0.27, 0.50, 0.93, 1.52, 2.13, 2.32, 2.34, 2.37, 2.32, 2.65, 2.52]) / 100
+    try:
+        for series_id, maturity in _FRED_SERIES.items():
+            url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+            df = pd.read_csv(url, index_col=0, parse_dates=True, na_values='.')
+            # Take the most recent non-NaN value
+            latest = df.dropna().iloc[-1, 0]
+            yield_maturities.append(maturity)
+            yields_decimal.append(float(latest) / 100.0)  # percentage -> decimal
+        
+        print(f"  Fetched live Treasury yields for {len(yields_decimal)} tenors from FRED")
+    except Exception as e:
+        print(f"  WARNING: FRED fetch failed ({e}), using fallback yields")
+        yield_maturities = [1/12, 3/12, 6/12, 1, 2, 5, 10, 30]
+        yields_decimal = [0.0372, 0.0365, 0.0358, 0.0347, 0.0347, 0.0374, 0.0419, 0.0486]
+    
+    yield_maturities = np.array(yield_maturities)
+    yields_decimal = np.array(yields_decimal)
     
     # Calibrate NSS model using ordinary least squares
-    curve_fit, status = calibrate_nss_ols(yield_maturities, yields)
+    curve_fit, status = calibrate_nss_ols(yield_maturities, yields_decimal)
     
     return curve_fit
 
 
 # =============================================================================
-# Part 5: Market Data Fetching (EOD Historical Data API)
+# Part 5: Market Data Fetching (Massive API — Live SPX Options)
 # =============================================================================
 
-def fetch_market_data(api_key=None, symbol='GSPC.INDX'):
+def fetch_and_process_market_data():
     """
-    Fetch option market data from EOD Historical Data API.
+    Fetch real SPX call options from the Massive API snapshot endpoint
+    and return processed data ready for Heston calibration.
     
-    Parameters:
-    -----------
-    api_key : str, optional
-        EOD API key. If None, will try to get from EOD_API environment variable.
-    symbol : str
-        Symbol to fetch options for (default: S&P500 Index)
-        
-    Returns:
-    --------
-    tuple
-        (S0, market_prices) where S0 is spot price and market_prices is dict of option data
-    """
-    if api_key is None:
-        api_key = os.environ.get('EOD_API')
-    
-    if api_key is None:
-        raise ValueError("EOD API key not found. Set EOD_API environment variable or pass api_key.")
-    
-    # Create the client instance
-    client = EodHistoricalData(api_key)
-    
-    # Fetch option data
-    resp = client.get_stock_options(symbol)
-    
-    S0 = resp['lastTradePrice']
-    market_prices = {}
-    
-    for i in resp['data']:
-        market_prices[i['expirationDate']] = {
-            'strike': [name['strike'] for name in i['options']['CALL']],
-            'bid': [name['bid'] for name in i['options']['CALL']],
-            'ask': [name['ask'] for name in i['options']['CALL']],
-            'price': [(name['bid'] + name['ask']) / 2 for name in i['options']['CALL']]
-        }
-    
-    return S0, market_prices
-
-
-def process_market_data(S0, market_prices, curve_fit):
-    """
-    Process raw market data into format suitable for calibration.
-    
-    Parameters:
-    -----------
-    S0 : float
-        Spot price
-    market_prices : dict
-        Dictionary of option prices by expiration date
-    curve_fit : NelsonSiegelSvenssonCurve
-        Fitted yield curve for rate interpolation
-        
-    Returns:
-    --------
-    pd.DataFrame
-        DataFrame with columns: maturity, strike, price, rate
-    """
-    # Find common strikes across all maturities
-    all_strikes = [v['strike'] for i, v in market_prices.items()]
-    common_strikes = set.intersection(*map(set, all_strikes))
-    common_strikes = sorted(common_strikes)
-    
-    print(f"Number of common strikes: {len(common_strikes)}")
-    
-    # Build price matrix
-    prices = []
-    maturities = []
-    
-    for date, v in market_prices.items():
-        maturities.append((dt.strptime(date, '%Y-%m-%d').replace(tzinfo=timezone.utc) - dt.now(timezone.utc)).days / 365.25)
-        price = [v['price'][i] for i, x in enumerate(v['strike']) if x in common_strikes]
-        prices.append(price)
-    
-    # Create volatility surface DataFrame
-    price_arr = np.array(prices, dtype=object)
-    volSurface = pd.DataFrame(price_arr, index=maturities, columns=common_strikes)
-    
-    # Filter to reasonable range
-    # Strikes: relative to spot (70%-115%) instead of hardcoded absolute levels
-    # Maturity: 0.04-2 years (extended from 1yr so kappa/theta are identifiable)
-    lower_strike = S0 * 0.70
-    upper_strike = S0 * 1.15
-    volSurface = volSurface.iloc[
-        (volSurface.index > 0.04) & (volSurface.index < 2),
-        (volSurface.columns > lower_strike) & (volSurface.columns < upper_strike)
-    ]
-    
-    # Convert to long format for calibration
-    volSurfaceLong = volSurface.melt(ignore_index=False).reset_index()
-    volSurfaceLong.columns = ['maturity', 'strike', 'price']
-    
-    # Calculate risk-free rate for each maturity
-    volSurfaceLong['rate'] = volSurfaceLong['maturity'].apply(curve_fit)
-    
-    return volSurfaceLong
-
-
-def generate_test_market_data():
-    """
-    Generate synthetic test market data for testing without API access.
+    Reads the MASSIVE_API_KEY environment variable automatically.
+    Paginates through all results for I:SPX calls expiring between
+    today and one year from today, then applies quality filters.
     
     Returns:
     --------
     tuple
-        (S0, r, K, tau, P) arrays for calibration testing
+        (S0, DataFrame) where S0 is the underlying spot price and
+        DataFrame has columns: maturity, strike, price, weight
     """
-    S0 = 4500.0  # Approximate S&P 500 level
+    from massive import RESTClient
     
-    # Generate synthetic option data
-    strikes = np.array([4000, 4200, 4400, 4500, 4600, 4800, 5000])
-    maturities = np.array([0.1, 0.25, 0.5, 0.75])
+    client = RESTClient()  # reads MASSIVE_API_KEY from env
     
-    # Use Heston model to generate "market" prices with known parameters
-    v0_true = 0.04
-    kappa_true = 2.0
-    theta_true = 0.04
-    sigma_true = 0.3
-    rho_true = -0.7
+    today = date.today()
+    one_year = today + timedelta(days=365)
     
-    # Build arrays — FFT prices all strikes per maturity in one shot
-    K_list, tau_list, r_list, P_list = [], [], [], []
+    # Paginate through all call options on I:SPX
+    contracts = []
+    for o in client.list_snapshot_options_chain(
+        "I:SPX",
+        params={
+            "contract_type": "call",
+            "expiration_date.gte": today.strftime("%Y-%m-%d"),
+            "expiration_date.lte": one_year.strftime("%Y-%m-%d"),
+        },
+    ):
+        contracts.append(o)
     
-    curve = calibrate_yield_curve()
+    print(f"  Raw contracts fetched: {len(contracts)}")
     
-    for tau in maturities:
-        r = curve(tau)
-        prices = heston_price_fft(S0, strikes, v0_true, kappa_true, theta_true,
-                                  sigma_true, rho_true, tau, r)
-        for i, K in enumerate(strikes):
-            K_list.append(K)
-            tau_list.append(tau)
-            r_list.append(r)
-            P_list.append(prices[i])
+    if not contracts:
+        raise RuntimeError("No option contracts returned from Massive API")
     
-    return (S0, 
-            np.array(r_list), 
-            np.array(K_list), 
-            np.array(tau_list), 
-            np.array(P_list))
+    # Extract spot price from underlying asset
+    S0 = contracts[0].underlying_asset.price
+    
+    rows = []
+    for c in contracts:
+        bid    = c.last_quote.bid
+        ask    = c.last_quote.ask
+        strike = c.details.strike_price
+        exp    = c.details.expiration_date
+        
+        mid    = (bid + ask) / 2.0
+        spread = ask - bid
+        tau    = (dt.strptime(exp, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                  - dt.now(timezone.utc)).days / 365.25
+        
+        # Quality filters
+        if spread <= 0 or bid <= 0:
+            continue
+        if tau < 0.04 or tau > 2.0:
+            continue
+        if strike < S0 * 0.70 or strike > S0 * 1.15:
+            continue
+        
+        rows.append({
+            "maturity": tau,
+            "strike":   strike,
+            "price":    mid,
+            "weight":   1.0 / spread,
+        })
+    
+    df = pd.DataFrame(rows)
+    return S0, df
 
 
 # =============================================================================
@@ -446,7 +396,7 @@ def create_objective_function(S0, K, tau, r, P, weights=None):
         
         # Weighted mean squared error
         if weights is not None:
-            err = np.sum(weights * (P - heston_prices)**2)
+            err = np.sum(weights * (P - heston_prices)**2) / np.sum(weights)
         else:
             err = np.sum((P - heston_prices)**2 / len(P))
         
@@ -683,31 +633,38 @@ def plot_error_surface(tau_arr, K_arr, errors, output_file='pricing_errors.html'
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Heston Model Calibration Pipeline (Synthetic Data Mode)")
+    print("Heston Model Calibration Pipeline (Live SPX Data)")
     print("=" * 60)
     
-    # 1. Yield Curve Calibration
+    # 1. Fetch & process market data from Massive API
     print("\n" + "-" * 60)
-    print("1. Calibrating Yield Curve")
+    print("1. Fetching SPX Options from Massive API")
     print("-" * 60)
+    
+    S0, df = fetch_and_process_market_data()
+    print(f"  Spot (S0): {S0:.2f}")
+    print(f"  Contracts after filtering: {len(df)}")
+    
+    K_arr   = df["strike"].values
+    tau_arr = df["maturity"].values
+    P_arr   = df["price"].values
+    w_arr   = df["weight"].values
+    
+    # 2. Calibrate yield curve from live Treasury data
+    print("\n" + "-" * 60)
+    print("2. Calibrating Yield Curve (Live FRED Data)")
+    print("-" * 60)
+    
     curve = calibrate_yield_curve()
-    print(f"1-year rate: {curve(1.0)*100:.4f}%")
-    
-    # 2. Market Data Acquisition
-    print("\n" + "-" * 60)
-    print("2. Generating Synthetic Market Data")
-    print("-" * 60)
-    print("\nTrue parameters: v0=0.04, kappa=2.0, theta=0.04, sigma=0.3, rho=-0.7")
-    
-    S0, r_arr, K_arr, tau_arr, P_arr = generate_test_market_data()
-    print(f"Data generated for {len(P_arr)} option prices.")
+    r_arr = np.array([curve(t) for t in tau_arr])
+    print(f"  1-year rate: {curve(1.0)*100:.4f}%")
     
     # 3. Calibrate Heston model
     print("\n" + "-" * 60)
     print("3. Calibrating Heston Model")
     print("-" * 60 + "\n")
     
-    calibrated = calibrate_heston(S0, K_arr, tau_arr, r_arr, P_arr)
+    calibrated = calibrate_heston(S0, K_arr, tau_arr, r_arr, P_arr, weights=w_arr)
     
     # 4. Compute Calibrated Prices and Statistics
     print("\n" + "-" * 60)
