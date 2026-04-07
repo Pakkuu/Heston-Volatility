@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "massive>=1.0.0",
+    "alpaca-py>=0.30.0",
     "matplotlib>=3.10.8",
     "nelson-siegel-svensson>=0.5.0",
     "numpy>=2.4.1",

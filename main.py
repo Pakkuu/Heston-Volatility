@@ -139,10 +139,10 @@ def heston_price_fft(S0, K, v0, kappa, theta, sigma, rho, tau, r,
     # Frequency-domain grid: v_j = j * eta
     v = np.arange(n_points) * eta
     
-    # Log-strike grid spacing and bounds
+    # Log-strike grid spacing and bounds (standard Carr-Madan grid)
     lda = 2 * np.pi / (n_points * eta)       # log-strike spacing (lambda)
     b = n_points * lda / 2                    # half-width of log-strike grid
-    ku = -b + lda * np.arange(n_points) + np.log(S0)  # centered on log(S0)
+    ku = -b + lda * np.arange(n_points)       # log-strike grid points
     
     # Carr-Madan modified characteristic function psi(v)
     # psi(v) = exp(-r*tau) * phi(v - (alpha+1)*i) / (alpha^2 + alpha - v^2 + i*(2*alpha+1)*v)
@@ -156,13 +156,11 @@ def heston_price_fft(S0, K, v0, kappa, theta, sigma, rho, tau, r,
     sw[0] = 1
     sw = sw / 3
     
-    # Build IFFT input with phase shift
-    # Using identity: Re[FFT(x)] = N * Re[IFFT(conj(x))]
-    # where x = exp(i*v*b) * psi * eta * sw  (standard Carr-Madan FFT input)
+    # Build FFT input with phase shift (standard Carr-Madan formulation)
     x = np.exp(1j * v * b) * psi * eta * sw
     
-    # Inverse FFT: frequency space -> strike space
-    payoff = np.real(np.fft.ifft(np.conj(x))) * n_points / np.pi
+    # Forward FFT: frequency space -> strike space
+    payoff = np.real(np.fft.fft(x)) / np.pi
     
     # Apply damping factor to recover call prices on the grid
     call_prices_grid = np.exp(-alpha * ku) * payoff
@@ -266,16 +264,39 @@ def calibrate_yield_curve():
 
 
 # =============================================================================
-# Part 5: Market Data Fetching (Massive API — Live SPX Options)
+# Part 5: Market Data Fetching (Alpaca API — Live SPY Options)
 # =============================================================================
+
+def _parse_occ_symbol(symbol):
+    """
+    Parse an OCC option symbol into its components.
+    
+    Format: SPY260515C00555000
+            ^^^               underlying (variable length, ends where digits begin for date)
+               ^^^^^^         YYMMDD expiration date
+                     ^        C=call, P=put
+                      ^^^^^^^^ strike price * 1000 (zero-padded 8 digits)
+    
+    For standard equity options the underlying is typically 1-5 chars,
+    followed by exactly 15 chars (6 date + 1 type + 8 strike).
+    """
+    # The last 15 characters are always date(6) + type(1) + strike(8)
+    tail = symbol[-15:]
+    underlying = symbol[:-15]
+    date_str = tail[:6]        # YYMMDD
+    # cp = tail[6]             # C or P (not needed here)
+    strike = int(tail[7:]) / 1000.0
+    expiration = f"20{date_str[:2]}-{date_str[2:4]}-{date_str[4:6]}"
+    return underlying, expiration, strike
+
 
 def fetch_and_process_market_data():
     """
-    Fetch real SPX call options from the Massive API snapshot endpoint
+    Fetch real SPY call options from the Alpaca Market Data API
     and return processed data ready for Heston calibration.
     
-    Reads the MASSIVE_API_KEY environment variable automatically.
-    Paginates through all results for I:SPX calls expiring between
+    Reads ALPACA_API_KEY and ALPACA_API_SECRET environment variables.
+    Fetches the full option chain snapshot for SPY calls expiring between
     today and one year from today, then applies quality filters.
     
     Returns:
@@ -284,39 +305,92 @@ def fetch_and_process_market_data():
         (S0, DataFrame) where S0 is the underlying spot price and
         DataFrame has columns: maturity, strike, price, weight
     """
-    from massive import RESTClient
+    import os
+    from dotenv import load_dotenv
+    from alpaca.data.historical.option import OptionHistoricalDataClient
+    from alpaca.data.live.option import OptionDataStream
+    from alpaca.data.historical.stock import StockHistoricalDataClient
+    from alpaca.data.requests import OptionChainRequest, StockLatestQuoteRequest
     
-    client = RESTClient()  # reads MASSIVE_API_KEY from env
+    load_dotenv()
+    
+    api_key = os.environ.get("ALPACA_API_KEY")
+    api_secret = os.environ.get("ALPACA_API_SECRET")
+    
+    if not api_key or not api_secret:
+        raise ValueError(
+            "Alpaca credentials not found. Set ALPACA_API_KEY and "
+            "ALPACA_API_SECRET environment variables."
+        )
+    
+    underlying = "SPY"  # SPY options and SPY spot for consistency
+    
+    # Get spot price S0 from latest SPY trade (most reliable, works after-hours)
+    stock_client = StockHistoricalDataClient(api_key=api_key, secret_key=api_secret)
+    try:
+        from alpaca.data.requests import StockLatestTradeRequest
+        trade_resp = stock_client.get_stock_latest_trade(
+            StockLatestTradeRequest(symbol_or_symbols="SPY")
+        )
+        S0 = trade_resp["SPY"].price
+        print(f"  SPY latest trade price (S0): {S0:.2f}")
+    except Exception as e:
+        # Fallback to quote mid if trade fails
+        try:
+            quote_resp = stock_client.get_stock_latest_quote(
+                StockLatestQuoteRequest(symbol_or_symbols="SPY")
+            )
+            q = quote_resp["SPY"]
+            if q.bid_price > 0 and q.ask_price > 0:
+                S0 = (q.bid_price + q.ask_price) / 2.0
+            else:
+                S0 = max(q.bid_price, q.ask_price)
+            print(f"  SPY latest quote (S0): {S0:.2f}")
+        except Exception as e2:
+            print(f"  WARNING: Failed to fetch SPY price ({e2}).")
+            S0 = 0.0
+    
+    # Fetch option chain snapshot
+    option_client = OptionHistoricalDataClient(api_key=api_key, secret_key=api_secret)
     
     today = date.today()
     one_year = today + timedelta(days=365)
     
-    # Paginate through all call options on I:SPX
-    contracts = []
-    for o in client.list_snapshot_options_chain(
-        "I:SPX",
-        params={
-            "contract_type": "call",
-            "expiration_date.gte": today.strftime("%Y-%m-%d"),
-            "expiration_date.lte": one_year.strftime("%Y-%m-%d"),
-        },
-    ):
-        contracts.append(o)
+    chain = option_client.get_option_chain(
+        OptionChainRequest(
+            underlying_symbol=underlying,
+            type="call",
+            strike_price_gte=S0 * 0.90,
+            strike_price_lte=S0 * 1.15,
+            expiration_date_gte=today.strftime("%Y-%m-%d"),
+            expiration_date_lte=one_year.strftime("%Y-%m-%d"),
+        )
+    )
     
-    print(f"  Raw contracts fetched: {len(contracts)}")
+    if chain:
+        first_snapshot = next(iter(chain.values()))
+        # "...or by reading it from the option chain snapshot's underlying price field if available."
+        if hasattr(first_snapshot, "underlying_asset_price") and first_snapshot.underlying_asset_price:
+            S0 = first_snapshot.underlying_asset_price
+        elif hasattr(first_snapshot, "latest_quote") and first_snapshot.latest_quote and hasattr(first_snapshot.latest_quote, "underlying_price") and first_snapshot.latest_quote.underlying_price:
+            S0 = first_snapshot.latest_quote.underlying_price
     
-    if not contracts:
-        raise RuntimeError("No option contracts returned from Massive API")
+    print(f"  Raw contracts fetched: {len(chain)}")
     
-    # Extract spot price from underlying asset
-    S0 = contracts[0].underlying_asset.price
+    if not chain:
+        raise RuntimeError("No option contracts returned from Alpaca API")
     
     rows = []
-    for c in contracts:
-        bid    = c.last_quote.bid
-        ask    = c.last_quote.ask
-        strike = c.details.strike_price
-        exp    = c.details.expiration_date
+    for symbol, snapshot in chain.items():
+        # Parse strike and expiration from OCC symbol
+        _, exp, strike = _parse_occ_symbol(symbol)
+        
+        # Extract bid/ask from latest quote
+        q = snapshot.latest_quote
+        if q is None:
+            continue
+        bid = q.bid_price
+        ask = q.ask_price
         
         mid    = (bid + ask) / 2.0
         spread = ask - bid
@@ -328,7 +402,7 @@ def fetch_and_process_market_data():
             continue
         if tau < 0.04 or tau > 2.0:
             continue
-        if strike < S0 * 0.70 or strike > S0 * 1.15:
+        if strike < S0 * 0.90 or strike > S0 * 1.15:
             continue
         
         rows.append({
@@ -636,9 +710,9 @@ if __name__ == "__main__":
     print("Heston Model Calibration Pipeline (Live SPX Data)")
     print("=" * 60)
     
-    # 1. Fetch & process market data from Massive API
+    # 1. Fetch & process market data from Alpaca API
     print("\n" + "-" * 60)
-    print("1. Fetching SPX Options from Massive API")
+    print("1. Fetching SPY Options from Alpaca API")
     print("-" * 60)
     
     S0, df = fetch_and_process_market_data()
@@ -657,12 +731,13 @@ if __name__ == "__main__":
     
     curve = calibrate_yield_curve()
     r_arr = np.array([curve(t) for t in tau_arr])
-    print(f"  1-year rate: {curve(1.0)*100:.4f}%")
     
     # 3. Calibrate Heston model
     print("\n" + "-" * 60)
     print("3. Calibrating Heston Model")
     print("-" * 60 + "\n")
+    print(f"  S0={S0:.2f}, K range=[{K_arr.min():.0f}, {K_arr.max():.0f}], moneyness=[{K_arr.min()/S0:.2f}, {K_arr.max()/S0:.2f}]")
+
     
     calibrated = calibrate_heston(S0, K_arr, tau_arr, r_arr, P_arr, weights=w_arr)
     
